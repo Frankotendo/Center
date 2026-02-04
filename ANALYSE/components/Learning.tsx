@@ -442,7 +442,7 @@ export const KaliTerminal = ({
                         <div className="p-4 text-black text-[10px] font-mono leading-tight bg-black text-slate-300">
                            Microsoft Windows [Version 10.0]<br/>
                            (c) 2019 Microsoft Corp.<br/><br/>
-                           C:\Users\Admin> <span className="animate-pulse">_</span>
+                           C:\Users\Admin&gt; <span className="animate-pulse">_</span>
                         </div>
                     </div>
                     <div className="absolute bottom-0 w-full h-8 bg-[#c0c0c0] border-t-2 border-white flex items-center px-2">
@@ -480,7 +480,7 @@ export const KaliTerminal = ({
                                 <i className="fas fa-bars text-xs"></i>
                                 <i className="fas fa-square text-xs"></i>
                                 <i className="fas fa-chevron-left text-xs"></i>
-                               </>
+                                </>
                            )}
                         </div>
                         {/* Vulnerability Indicator */}
