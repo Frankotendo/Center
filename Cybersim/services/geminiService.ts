@@ -45,6 +45,16 @@ export const executeCommand = async (
   target: Target,
   historySummary: string
 ): Promise<SimulationResponse> => {
+  
+  // Check for API Key immediately
+  if (!process.env.API_KEY) {
+      return {
+          terminalOutput: `[CRITICAL ERROR] AUTHENTICATION FAILURE.\n\nERROR CODE: NO_API_KEY\nDETAILS: The uplink could not be established because the encryption key (API_KEY) is missing from the environment configuration.\n\nRESOLUTION:\n1. Open Vercel Dashboard > Settings > Environment Variables.\n2. Ensure 'API_KEY' is set correctly.\n3. Redeploy the instance.`,
+          instructorCommentary: "Operative, I'm getting no signal. Your API credentials are missing. Check your deployment configuration immediately.",
+          missionUpdate: { status: 'failed' }
+      };
+  }
+
   const model = 'gemini-3-flash-preview'; 
 
   const prompt = `
@@ -130,6 +140,8 @@ export const executeCommand = async (
 
 export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> => {
   if (!text || text.trim().length === 0) return null;
+  
+  if (!process.env.API_KEY) return null;
 
   try {
     const ai = getAI();
@@ -178,6 +190,8 @@ export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> 
 // --- Mission Generation ---
 
 export const generateNewMissions = async (completedCount: number): Promise<Mission[]> => {
+    if (!process.env.API_KEY) return [];
+
     // Determine difficulty based on completed count
     const level = completedCount < 5 ? 'Beginner' : completedCount < 15 ? 'Intermediate' : 'Advanced';
     
@@ -223,6 +237,20 @@ export const generateNewMissions = async (completedCount: number): Promise<Missi
 
 // --- Target Generation ---
 export const generateTarget = async (targetId: string, typeHint: string): Promise<Target> => {
+    if (!process.env.API_KEY) {
+        return {
+            id: targetId,
+            name: "Offline Target",
+            type: TargetType.SERVER,
+            ip: "0.0.0.0",
+            os: "Unknown",
+            vulnerabilities: [],
+            ports: [],
+            status: 'offline',
+            description: "Target unavailable due to missing API Uplink."
+        };
+    }
+
     const prompt = `Generate a detailed simulated target profile for a cybersecurity mission.
     ID: ${targetId}
     Type Hint: ${typeHint} (e.g. Supabase DB, iPhone 14, Vercel App).
@@ -276,6 +304,14 @@ export const generateTarget = async (targetId: string, typeHint: string): Promis
 
 // --- Lecture Generation (Whiteboard Tutor) ---
 export const generateLecture = async (topic: string): Promise<Lecture> => {
+    if (!process.env.API_KEY) {
+        return {
+            topic: "System Offline",
+            steps: [{ voiceScript: "I cannot connect to the knowledge base. Please check your API configuration.", boardNotes: "ERROR: API_KEY MISSING" }],
+            currentStepIndex: 0
+        };
+    }
+
     const prompt = `
         ACT AS: A senior cybersecurity professor ("Professor Cypher").
         TASK: Create a deep-dive educational lecture on the topic: "${topic}".
