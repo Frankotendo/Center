@@ -5,23 +5,26 @@ import { Mission, Target, SimulationResponse, TargetType, Lecture, LectureStep }
 // Note: In Vite/Vercel, ensure your API key is exposed via environment variables.
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
+const PRIMARY_MODEL = 'gemini-3-flash-preview';
+const FALLBACK_MODEL = 'gemini-2.0-flash-exp';
+
 // Helper to strip Markdown formatting and extra text from JSON responses
 const cleanJSON = (text: string): string => {
   if (!text) return "{}";
   
-  // First, remove markdown code blocks
-  let cleaned = text.replace(/```json\n?|```/g, '');
+  // 1. Remove markdown code blocks (```json ... ```)
+  let cleaned = text.replace(/```json\s*|```/g, '');
   
-  // Find the first '{' or '[' and the last '}' or ']'
+  // 2. Find the outer-most JSON structure
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
   const firstBracket = cleaned.indexOf('[');
   const lastBracket = cleaned.lastIndexOf(']');
   
-  // Determine if we are looking for an object or array
   let start = -1;
   let end = -1;
 
+  // Detect if it's likely an Object or an Array based on which comes first
   if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
       start = firstBrace;
       end = lastBrace;
@@ -37,6 +40,30 @@ const cleanJSON = (text: string): string => {
   return cleaned.trim();
 };
 
+// Helper: Attempt generation with fallback
+async function generateWithFallback(prompt: string, config: any) {
+    const ai = getAI();
+    try {
+        // Try Primary Model
+        return await ai.models.generateContent({
+            model: PRIMARY_MODEL,
+            contents: prompt,
+            config: config
+        });
+    } catch (error: any) {
+        // If 404 (Not Found) or 503 (Unavailable), try fallback
+        if (error.message?.includes('404') || error.message?.includes('503') || error.message?.includes('not found')) {
+            console.warn(`Primary model ${PRIMARY_MODEL} failed, switching to ${FALLBACK_MODEL}`);
+            return await ai.models.generateContent({
+                model: FALLBACK_MODEL,
+                contents: prompt,
+                config: config
+            });
+        }
+        throw error;
+    }
+}
+
 // --- Simulation Logic (Game Master) ---
 
 export const executeCommand = async (
@@ -46,7 +73,6 @@ export const executeCommand = async (
   historySummary: string
 ): Promise<SimulationResponse> => {
   
-  // Check for API Key immediately
   if (!process.env.API_KEY) {
       return {
           terminalOutput: `[CRITICAL ERROR] AUTHENTICATION FAILURE.\n\nERROR CODE: NO_API_KEY\nDETAILS: The uplink could not be established because the encryption key (API_KEY) is missing from the environment configuration.\n\nRESOLUTION:\n1. Open Vercel Dashboard > Settings > Environment Variables.\n2. Ensure 'API_KEY' is set correctly.\n3. Redeploy the instance.`,
@@ -54,8 +80,6 @@ export const executeCommand = async (
           missionUpdate: { status: 'failed' }
       };
   }
-
-  const model = 'gemini-3-flash-preview'; 
 
   const prompt = `
     ACT AS: "Kore", a military-grade Cyber Warfare Training AI.
@@ -91,11 +115,7 @@ export const executeCommand = async (
   `;
 
   try {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
+    const response = await generateWithFallback(prompt, {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -119,18 +139,17 @@ export const executeCommand = async (
             }
           }
         }
-      }
     });
 
     const text = response.text;
-    if (!text) throw new Error("No response from simulation engine");
+    if (!text) throw new Error("Empty response from AI");
     
     return JSON.parse(cleanJSON(text)) as SimulationResponse;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Simulation Error:", error);
     return {
-      terminalOutput: `[SYSTEM ERROR] Uplink instability detected.\n${error}`,
-      instructorCommentary: "Connection unstable. Re-establish uplink and retry.",
+      terminalOutput: `[SYSTEM ERROR] Uplink instability detected.\n\nDEBUG INFO:\n${error.message || JSON.stringify(error)}\n\nNOTE: Ensure your API Key is valid and has access to Gemini models.`,
+      instructorCommentary: "Connection unstable. Check the terminal for debug logs.",
       missionUpdate: { status: 'ongoing' }
     };
   }
@@ -140,19 +159,16 @@ export const executeCommand = async (
 
 export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> => {
   if (!text || text.trim().length === 0) return null;
-  
   if (!process.env.API_KEY) return null;
 
   try {
     const ai = getAI();
-    // Truncate to safe length (approx 4000 chars) to prevent backend timeouts
     const safeText = text.slice(0, 4000); 
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: safeText }] }],
       config: {
-        // Use string literal "AUDIO" cast to any to ensure browser compatibility with the SDK enum
         responseModalities: ["AUDIO" as any], 
         speechConfig: {
           voiceConfig: {
@@ -163,12 +179,8 @@ export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> 
     });
 
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) {
-        // This is a valid case (e.g. model decided not to speak), but rare for TTS
-        return null;
-    }
+    if (!base64Audio) return null;
 
-    // Decode Base64 to ArrayBuffer
     const binaryString = atob(base64Audio);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
@@ -177,7 +189,6 @@ export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> 
     }
     return bytes.buffer;
   } catch (error: any) {
-    // Handle specific XHR/Network errors gracefully without crashing the flow
     if (error?.message?.includes('500') || error?.message?.includes('xhr error')) {
         console.warn("TTS System Offline (Network/API Error): Voice synthesis skipped.");
     } else {
@@ -192,37 +203,29 @@ export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> 
 export const generateNewMissions = async (completedCount: number): Promise<Mission[]> => {
     if (!process.env.API_KEY) return [];
 
-    // Determine difficulty based on completed count
     const level = completedCount < 5 ? 'Beginner' : completedCount < 15 ? 'Intermediate' : 'Advanced';
     
     const prompt = `Generate 3 unique cybersecurity training missions for a student at ${level} level.
     The targets should vary (Web, Mobile, Cloud, IoT).
-    Return a JSON array of Mission objects.
-    Each mission needs a unique ID, title, brief description, list of objectives, recommended tools (e.g. nmap, wireshark, burpsuite), and a briefing script for the instructor.
-    Also generate a mocked 'targetId' for each (e.g., 'target-001').`;
+    Return a JSON array of Mission objects.`;
 
     try {
-        const ai = getAI();
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            id: { type: Type.STRING },
-                            title: { type: Type.STRING },
-                            difficulty: { type: Type.STRING },
-                            description: { type: Type.STRING },
-                            objectives: { type: Type.ARRAY, items: { type: Type.STRING } },
-                            targetId: { type: Type.STRING },
-                            completed: { type: Type.BOOLEAN },
-                            recommendedTools: { type: Type.ARRAY, items: { type: Type.STRING } },
-                            briefing: { type: Type.STRING }
-                        }
+        const response = await generateWithFallback(prompt, {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        title: { type: Type.STRING },
+                        difficulty: { type: Type.STRING },
+                        description: { type: Type.STRING },
+                        objectives: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        targetId: { type: Type.STRING },
+                        completed: { type: Type.BOOLEAN },
+                        recommendedTools: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        briefing: { type: Type.STRING }
                     }
                 }
             }
@@ -257,34 +260,28 @@ export const generateTarget = async (targetId: string, typeHint: string): Promis
     Return JSON.`;
 
     try {
-       const ai = getAI();
-       const response = await ai.models.generateContent({
-           model: "gemini-3-flash-preview",
-           contents: prompt,
-           config: {
-               responseMimeType: "application/json",
-               responseSchema: {
-                   type: Type.OBJECT,
-                   properties: {
-                       id: {type: Type.STRING},
-                       name: {type: Type.STRING},
-                       type: {type: Type.STRING}, // Enum mapping handled by caller logic if needed, simple string here is fine for sim
-                       ip: {type: Type.STRING},
-                       os: {type: Type.STRING},
-                       vulnerabilities: {type: Type.ARRAY, items: {type: Type.STRING}},
-                       ports: {type: Type.ARRAY, items: {type: Type.INTEGER}},
-                       status: {type: Type.STRING},
-                       description: {type: Type.STRING}
-                   }
+       const response = await generateWithFallback(prompt, {
+           responseMimeType: "application/json",
+           responseSchema: {
+               type: Type.OBJECT,
+               properties: {
+                   id: {type: Type.STRING},
+                   name: {type: Type.STRING},
+                   type: {type: Type.STRING}, 
+                   ip: {type: Type.STRING},
+                   os: {type: Type.STRING},
+                   vulnerabilities: {type: Type.ARRAY, items: {type: Type.STRING}},
+                   ports: {type: Type.ARRAY, items: {type: Type.INTEGER}},
+                   status: {type: Type.STRING},
+                   description: {type: Type.STRING}
                }
            }
        });
        const data = JSON.parse(cleanJSON(response.text || "{}"));
-       // Ensure defaults
        return {
            ...data,
-           vulnerabilities: [], // Start hidden
-           ports: [], // Start hidden
+           vulnerabilities: [],
+           ports: [],
            status: 'online'
        } as Target;
     } catch (e) {
@@ -325,23 +322,18 @@ export const generateLecture = async (topic: string): Promise<Lecture> => {
     `;
 
     try {
-        const ai = getAI();
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        steps: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    voiceScript: { type: Type.STRING },
-                                    boardNotes: { type: Type.STRING }
-                                }
+        const response = await generateWithFallback(prompt, {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    steps: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                voiceScript: { type: Type.STRING },
+                                boardNotes: { type: Type.STRING }
                             }
                         }
                     }
@@ -349,17 +341,26 @@ export const generateLecture = async (topic: string): Promise<Lecture> => {
             }
         });
 
-        const data = JSON.parse(cleanJSON(response.text || "{}"));
+        const text = response.text;
+        if (!text) throw new Error("No text response from AI");
+
+        const data = JSON.parse(cleanJSON(text));
         return {
             topic,
             steps: data.steps || [],
             currentStepIndex: 0
         };
-    } catch (e) {
+    } catch (e: any) {
         console.error("Lecture Gen Error", e);
+        // Expose the specific error message to the UI
+        const errorMessage = e.message || e.toString();
+        
         return {
-            topic: "Error",
-            steps: [{ voiceScript: "I cannot access the curriculum database at this moment.", boardNotes: "SYSTEM ERROR: CURRICULUM UNAVAILABLE" }],
+            topic: "Connection Error",
+            steps: [{ 
+                voiceScript: "I am unable to establish a connection to the neural lattice. Please check the whiteboard for error codes.", 
+                boardNotes: `# SYSTEM FAILURE\n\n**ERROR REPORT:**\n\`\`\`\n${errorMessage}\n\`\`\`\n\n**TROUBLESHOOTING:**\n1. If the error is '404', '400', or '503', it means the AI models are currently busy or unavailable for your key. Please try again in 1 minute.\n2. Ensure 'API_KEY' is set in Vercel.` 
+            }],
             currentStepIndex: 0
         };
     }
