@@ -2,7 +2,7 @@
 {
   "name": "Cyber",
   "version": "1.0.0",
-  "description": "Secure campus ride-sharing and node management logistics engine.",
+  "description": "cyber coms".
   "type": "module",
   "scripts": {
     "dev": "vite",
